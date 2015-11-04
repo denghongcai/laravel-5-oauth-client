@@ -15,10 +15,10 @@ class OAuthClient {
     }
 
     public function get($provider){
-        $clientId = \Config::get('oauth-client.consumers.'.$provider.'.clientId');
-        $clientSecret = \Config::get('oauth-client.consumers.'.$provider.'.clientSecret');
-        $className = \Config::get('oauth-client.consumers.'.$provider.'.className');
-        $redirectUri  = \Config::get('oauth-client.consumers.'.$provider.'.redirectUri');
+        $clientId = config('oauth-client.consumers.'.$provider.'.clientId');
+        $clientSecret = config('oauth-client.consumers.'.$provider.'.clientSecret');
+        $className = config('oauth-client.consumers.'.$provider.'.className');
+        $redirectUri  = config('oauth-client.consumers.'.$provider.'.redirectUri');
         $model = new $className(array(
             'clientId' => $clientId,
             'clientSecret' => $clientSecret,

@@ -8,11 +8,14 @@
 
 namespace Jzyuchen\OAuthClient\Provider;
 
-
+use League\OAuth2\Client\Entity\User;
 use League\OAuth2\Client\Provider\AbstractProvider;
 use League\OAuth2\Client\Token\AccessToken;
 
 class Weixin extends AbstractProvider {
+
+    protected $apiDomain = 'https://api.weixin.qq.com/sns';
+    protected $openid = ''; // only stupid tencent offers this..
 
     /**
      * Get the URL that this provider uses to begin authorization.
@@ -21,7 +24,35 @@ class Weixin extends AbstractProvider {
      */
     public function urlAuthorize()
     {
-        // TODO: Implement urlAuthorize() method.
+        return 'https://open.weixin.qq.com/connect/qrconnect';
+    }
+
+    public function getAuthorizationParameters(array $options)
+    {
+        if (empty($options['state'])) {
+            $options['state'] = $this->getRandomState();
+        }
+        if (empty($options['scope'])) {
+            $options['scope'] = $this->getDefaultScopes();
+        }
+        $options += [
+            'response_type'   => 'code',
+            'approval_prompt' => 'auto'
+        ];
+        if (is_array($options['scope'])) {
+            $separator = $this->getScopeSeparator();
+            $options['scope'] = implode($separator, $options['scope']);
+        }
+        // Store the state as it may need to be accessed later on.
+        $this->state = $options['state'];
+        return [
+            'appid'       => $this->clientId,
+            'redirect_uri'    => $this->redirectUri,
+            'state'           => $this->state,
+            'scope'           => $options['scope'],
+            'response_type'   => $options['response_type'],
+            'approval_prompt' => $options['approval_prompt'],
+        ];
     }
 
     /**
@@ -31,7 +62,28 @@ class Weixin extends AbstractProvider {
      */
     public function urlAccessToken()
     {
-        // TODO: Implement urlAccessToken() method.
+        return 'https://api.weixin.qq.com/sns/oauth2/access_token';
+    }
+
+    public function getAccessToken($grant, array $options = [])
+    {
+        $grant = $this->verifyGrant($grant);
+        $params = [
+            'appid'     => $this->clientId,
+            'secret' => $this->clientSecret,
+        ];
+        $params   = $grant->prepareRequestParameters($params, $options);
+        $request  = $this->getAccessTokenRequest($params);
+        $response = $this->getResponse($request);
+        $prepared = $this->prepareAccessTokenResponse($response);
+        $token    = $this->createAccessToken($prepared, $grant);
+        return $token;
+    }
+
+    public function createAccessToken(array $response, \League\OAuth2\Client\Grant\AbstractGrant $grant)
+    {
+        $this->openid = $response['openid'];
+        return new AccessToken($response);
     }
 
     /**
@@ -47,7 +99,7 @@ class Weixin extends AbstractProvider {
      */
     public function urlUserDetails(AccessToken $token)
     {
-        // TODO: Implement urlUserDetails() method.
+        return 'https://api.weixin.qq.com/sns/userinfo?access_token='.$token.'&openid='.$this->openid;
     }
 
     /**
@@ -60,6 +112,18 @@ class Weixin extends AbstractProvider {
      */
     public function userDetails($response, AccessToken $token)
     {
-        // TODO: Implement userDetails() method.
+        $user = new User();
+        $gender = (isset($response->sex)) ? $response->sex : null;
+        $province = (isset($response->province)) ? $response->province : null;
+        $imageUrl = (isset($response->headimgurl)) ? $response->headimgurl : null;
+        $user->exchangeArray([
+            'uid' => $response->openid,
+            'nickname' => $response->nickname,
+            'gender' => $gender,
+            'province' => $province,
+            'imageUrl' => $imageUrl,
+            'urls'  => null,
+        ]);
+        return $user;
     }
 }

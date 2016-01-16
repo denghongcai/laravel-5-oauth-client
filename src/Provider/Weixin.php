@@ -8,7 +8,10 @@
 
 namespace Jzyuchen\OAuthClient\Provider;
 
+use Guzzle\Http\Exception\BadResponseException;
 use League\OAuth2\Client\Entity\User;
+use League\OAuth2\Client\Exception\IDPException;
+use League\OAuth2\Client\Grant\GrantInterface;
 use League\OAuth2\Client\Provider\AbstractProvider;
 use League\OAuth2\Client\Token\AccessToken;
 
@@ -27,32 +30,20 @@ class Weixin extends AbstractProvider {
         return 'https://open.weixin.qq.com/connect/qrconnect';
     }
 
-    public function getAuthorizationParameters(array $options)
+    public function getAuthorizationUrl($options = [])
     {
-        if (empty($options['state'])) {
-            $options['state'] = $this->getRandomState();
-        }
-        if (empty($options['scope'])) {
-            $options['scope'] = $this->getDefaultScopes();
-        }
-        $options += [
-            'response_type'   => 'code',
-            'approval_prompt' => 'auto'
+        $this->state = isset($options['state']) ? $options['state'] : md5(uniqid(rand(), true));
+
+        $params = [
+            'appid' => $this->clientId,
+            'redirect_uri' => $this->redirectUri,
+            'state' => $this->state,
+            'scope' => is_array($this->scopes) ? implode($this->scopeSeparator, $this->scopes) : $this->scopes,
+            'response_type' => isset($options['response_type']) ? $options['response_type'] : 'code',
+            'approval_prompt' => isset($options['approval_prompt']) ? $options['approval_prompt'] : 'auto',
         ];
-        if (is_array($options['scope'])) {
-            $separator = $this->getScopeSeparator();
-            $options['scope'] = implode($separator, $options['scope']);
-        }
-        // Store the state as it may need to be accessed later on.
-        $this->state = $options['state'];
-        return [
-            'appid'       => $this->clientId,
-            'redirect_uri'    => $this->redirectUri,
-            'state'           => $this->state,
-            'scope'           => $options['scope'],
-            'response_type'   => $options['response_type'],
-            'approval_prompt' => $options['approval_prompt'],
-        ];
+
+        return $this->urlAuthorize().'?'.$this->httpBuildQuery($params, '', '&');
     }
 
     /**
@@ -65,25 +56,73 @@ class Weixin extends AbstractProvider {
         return 'https://api.weixin.qq.com/sns/oauth2/access_token';
     }
 
-    public function getAccessToken($grant, array $options = [])
+    public function getAccessToken($grant = 'authorization_code', $params = [])
     {
-        $grant = $this->verifyGrant($grant);
-        $params = [
+        if (is_string($grant)) {
+            // PascalCase the grant. E.g: 'authorization_code' becomes 'AuthorizationCode'
+            $className = str_replace(' ', '', ucwords(str_replace(['-', '_'], ' ', $grant)));
+            $grant = 'League\\OAuth2\\Client\\Grant\\'.$className;
+            if (! class_exists($grant)) {
+                throw new \InvalidArgumentException('Unknown grant "'.$grant.'"');
+            }
+            $grant = new $grant();
+        } elseif (! $grant instanceof GrantInterface) {
+            $message = get_class($grant).' is not an instance of League\OAuth2\Client\Grant\GrantInterface';
+            throw new \InvalidArgumentException($message);
+        }
+
+        $defaultParams = [
             'appid'     => $this->clientId,
             'secret' => $this->clientSecret,
+            'redirect_uri'  => $this->redirectUri,
+            'grant_type'    => $grant,
         ];
-        $params   = $grant->prepareRequestParameters($params, $options);
-        $request  = $this->getAccessTokenRequest($params);
-        $response = $this->getResponse($request);
-        $prepared = $this->prepareAccessTokenResponse($response);
-        $token    = $this->createAccessToken($prepared, $grant);
-        return $token;
-    }
 
-    public function createAccessToken(array $response, \League\OAuth2\Client\Grant\AbstractGrant $grant)
-    {
-        $this->openid = $response['openid'];
-        return new AccessToken($response);
+        $requestParams = $grant->prepRequestParams($defaultParams, $params);
+
+        try {
+            switch (strtoupper($this->method)) {
+                case 'GET':
+                    // @codeCoverageIgnoreStart
+                    // No providers included with this library use get but 3rd parties may
+                    $client = $this->getHttpClient();
+                    $client->setBaseUrl($this->urlAccessToken() . '?' . $this->httpBuildQuery($requestParams, '', '&'));
+                    $request = $client->get(null, $this->getHeaders(), $requestParams)->send();
+                    $response = $request->getBody();
+                    break;
+                // @codeCoverageIgnoreEnd
+                case 'POST':
+                    $client = $this->getHttpClient();
+                    $client->setBaseUrl($this->urlAccessToken());
+                    $request = $client->post(null, $this->getHeaders(), $requestParams)->send();
+                    $response = $request->getBody();
+                    break;
+                // @codeCoverageIgnoreStart
+                default:
+                    throw new \InvalidArgumentException('Neither GET nor POST is specified for request');
+                // @codeCoverageIgnoreEnd
+            }
+        } catch (BadResponseException $e) {
+            // @codeCoverageIgnoreStart
+            $response = $e->getResponse()->getBody();
+            // @codeCoverageIgnoreEnd
+        }
+
+        $result = $this->prepareResponse($response);
+
+        if (isset($result['error']) && ! empty($result['error'])) {
+            // @codeCoverageIgnoreStart
+            throw new IDPException($result);
+            // @codeCoverageIgnoreEnd
+        }
+
+        $result = $this->prepareAccessTokenResult($result);
+
+        if (!empty($result['openid'])) {
+            $result['uid'] = $result['openid'];
+        }
+
+        return $grant->handleResponse($result);
     }
 
     /**
@@ -99,7 +138,7 @@ class Weixin extends AbstractProvider {
      */
     public function urlUserDetails(AccessToken $token)
     {
-        return 'https://api.weixin.qq.com/sns/userinfo?access_token='.$token.'&openid='.$this->openid;
+        return 'https://api.weixin.qq.com/sns/userinfo?access_token='.$token->accessToken.'&openid='.$token->uid;
     }
 
     /**
